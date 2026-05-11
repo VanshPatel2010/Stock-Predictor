@@ -95,6 +95,85 @@ async def fetch_price_history(symbol: str, days: int = 60) -> list[dict[str, Any
     return [dict(row) for row in rows]
 
 
+async def fetch_recent_feature_rows(symbol: str, limit: int = 60) -> list[dict[str, Any]]:
+    if _pool is None:
+        return []
+
+    query = """
+        select symbol, timestamp, open, high, low, close, volume
+        from public.stock_prices
+        where symbol = upper($1)
+        order by timestamp desc
+        limit $2
+    """
+    async with _pool.acquire() as connection:
+        rows = await connection.fetch(query, symbol, limit)
+    return [dict(row) for row in reversed(rows)]
+
+
+async def fetch_recent_prediction_errors(symbol: str, limit: int = 30) -> list[float]:
+    if _pool is None:
+        return []
+
+    query = """
+        with latest_daily_close as (
+            select
+                symbol,
+                timestamp::date as trading_day,
+                close,
+                row_number() over (
+                    partition by symbol, timestamp::date
+                    order by timestamp desc
+                ) as rn
+            from public.stock_prices
+            where symbol = upper($1)
+        )
+        select abs(pred.predicted_close - actual.close) as absolute_error
+        from public.predictions pred
+        join latest_daily_close actual
+          on actual.symbol = pred.symbol
+         and actual.trading_day = pred.predicted_for_date
+         and actual.rn = 1
+        where pred.symbol = upper($1)
+        order by pred.created_at desc
+        limit $2
+    """
+    async with _pool.acquire() as connection:
+        rows = await connection.fetch(query, symbol, limit)
+    return [float(row["absolute_error"]) for row in rows]
+
+
+async def insert_prediction(
+    symbol: str,
+    predicted_close: float,
+    confidence_low: float,
+    confidence_high: float,
+    predicted_for_date,
+) -> None:
+    if _pool is None:
+        return
+
+    query = """
+        insert into public.predictions (
+            symbol,
+            predicted_close,
+            confidence_low,
+            confidence_high,
+            predicted_for_date
+        )
+        values ($1, $2, $3, $4, $5)
+    """
+    async with _pool.acquire() as connection:
+        await connection.execute(
+            query,
+            symbol,
+            predicted_close,
+            confidence_low,
+            confidence_high,
+            predicted_for_date,
+        )
+
+
 async def upsert_price_rows(rows: list[dict[str, Any]]) -> int:
     if _pool is None or not rows:
         return 0

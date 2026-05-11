@@ -10,6 +10,7 @@ from app.routers.predict import router as predict_router
 from app.routers.stocks import router as stocks_router
 from app.services.data_fetcher import refresh_latest_prices, seed_historical_prices
 from app.services.db import close_pool, init_pool
+from app.services.predictor import load_predictor_artifacts
 
 
 scheduler = AsyncIOScheduler()
@@ -21,6 +22,7 @@ async def lifespan(_: FastAPI):
     await init_pool()
     await seed_historical_prices()
     await refresh_latest_prices(force=True)
+    load_predictor_artifacts()
     scheduler.add_job(refresh_latest_prices, "interval", minutes=5, id="stock-refresh")
     scheduler.start()
     try:
