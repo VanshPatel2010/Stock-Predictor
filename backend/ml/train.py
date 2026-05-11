@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import os
 from pathlib import Path
+from datetime import date, timedelta
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import numpy as np
 import pandas as pd
 import torch
-import yfinance as yf
+from dotenv import load_dotenv
 from torch import nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -28,6 +34,9 @@ WINDOW_SIZE = 60
 BATCH_SIZE = 32
 EPOCHS = 100
 LEARNING_RATE = 1e-3
+TIINGO_BASE_URL = "https://api.tiingo.com"
+
+load_dotenv()
 
 
 @dataclass
@@ -64,26 +73,40 @@ def _windows_from_blocks(
 
 
 def _download_symbol_frame(symbol: str) -> pd.DataFrame:
-    frame = yf.download(
-        tickers=symbol,
-        period="5y",
-        interval="1d",
-        auto_adjust=False,
-        progress=False,
-        threads=False,
+    api_key = os.getenv("TIINGO_API_KEY")
+    if not api_key:
+        raise RuntimeError("TIINGO_API_KEY is required for offline training.")
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=365 * 5)
+    query = urlencode(
+        {
+            "startDate": start_date.isoformat(),
+            "endDate": end_date.isoformat(),
+            "resampleFreq": "daily",
+            "token": api_key,
+        }
     )
+    request = Request(
+        f"{TIINGO_BASE_URL}/tiingo/daily/{symbol}/prices?{query}",
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Tiingo training download failed for {symbol}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Unable to reach Tiingo for {symbol}: {exc.reason}") from exc
+
+    frame = pd.DataFrame(payload)
     if frame.empty:
         raise RuntimeError(f"No training data returned for {symbol}.")
 
-    if isinstance(frame.columns, pd.MultiIndex):
-        frame.columns = [
-            str(level_0).lower()
-            for level_0, level_1 in frame.columns
-            if str(level_1).upper() == symbol
-        ]
-
-    frame = frame.rename_axis("timestamp").reset_index()
     frame.columns = [str(column).lower() for column in frame.columns]
+    frame["timestamp"] = pd.to_datetime(frame["date"], utc=True)
     frame["symbol"] = symbol
     return frame[["timestamp", "symbol", "open", "high", "low", "close", "volume"]]
 

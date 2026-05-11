@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlparse
 from typing import Any
 
 import asyncpg
@@ -10,14 +11,50 @@ load_dotenv()
 _pool: asyncpg.Pool | None = None
 
 
+def _database_url() -> str:
+    database_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("SUPABASE_DB_URL is not configured.")
+
+    if "[YOUR-PASSWORD]" in database_url:
+        raise RuntimeError(
+            "SUPABASE_DB_URL still contains the placeholder '[YOUR-PASSWORD]'. "
+            "Replace it with your actual Supabase database password."
+        )
+
+    if database_url.count("postgresql://") > 1:
+        raise RuntimeError(
+            "SUPABASE_DB_URL is malformed. It contains 'postgresql://' more than once. "
+            "Use a single DSN in the format "
+            "'postgresql://USER:PASSWORD@HOST:PORT/postgres'."
+        )
+
+    parsed = urlparse(database_url)
+    if parsed.scheme not in {"postgresql", "postgres"}:
+        raise RuntimeError(
+            "SUPABASE_DB_URL must start with 'postgresql://' or 'postgres://'."
+        )
+
+    if not parsed.hostname or not parsed.username:
+        raise RuntimeError(
+            "SUPABASE_DB_URL is missing required connection parts. "
+            "Expected format: 'postgresql://USER:PASSWORD@HOST:PORT/postgres'."
+        )
+
+    return database_url
+
+
 async def init_pool() -> asyncpg.Pool:
     global _pool
 
     if _pool is None:
-        database_url = os.getenv("SUPABASE_DB_URL")
-        if not database_url:
-            raise RuntimeError("SUPABASE_DB_URL is not configured.")
-        _pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5)
+        database_url = _database_url()
+        _pool = await asyncpg.create_pool(
+            database_url,
+            min_size=1,
+            max_size=5,
+            statement_cache_size=0,
+        )
 
     return _pool
 

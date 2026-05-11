@@ -11,9 +11,31 @@ export type StockPricePoint = {
 export type Prediction = {
   symbol: string;
   predictedClose: number;
-  lowerBound: number;
-  upperBound: number;
-  confidence: number;
-  asOf: string;
+  confidenceLow: number;
+  confidenceHigh: number;
+  predictedForDate: string;
 };
 
+export type StockSummary = {
+  symbol: string;
+  latestPrice: number;
+  percentChange: number;
+  timestamp: string;
+};
+
+export type WatchlistItem = {
+  symbol: string;
+  latestPrice: number;
+  percentChange: number;
+};
+
+export type ChartPoint = StockPricePoint & {
+  predictedClose?: number;
+  predictedHigh?: number;
+  predictedLow?: number;
+  isBullish: boolean;
+  candleBody: number;
+  candleBase: number;
+  wickLow: number;
+  wickHigh: number;
+};

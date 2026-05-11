@@ -1,16 +1,22 @@
+import json
+import logging
 import os
 from asyncio import to_thread
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-import yfinance as yf
 from dotenv import load_dotenv
 
 from app.services.db import upsert_price_rows
 
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 EASTERN_TZ = ZoneInfo("America/New_York")
+TIINGO_BASE_URL = "https://api.tiingo.com"
 
 
 def _configured_symbols() -> list[str]:
@@ -19,6 +25,13 @@ def _configured_symbols() -> list[str]:
         for item in os.getenv("DEFAULT_SYMBOLS", "AAPL,MSFT,NVDA").split(",")
         if item.strip()
     ]
+
+
+def _tiingo_api_key() -> str:
+    api_key = os.getenv("TIINGO_API_KEY")
+    if not api_key:
+        raise RuntimeError("TIINGO_API_KEY is not configured.")
+    return api_key
 
 
 def _is_market_hours(now: datetime | None = None) -> bool:
@@ -32,51 +45,98 @@ def _is_market_hours(now: datetime | None = None) -> bool:
     return market_open <= current_minutes <= market_close
 
 
-def _normalize_timestamp(value: object) -> datetime:
-    timestamp = value.to_pydatetime() if hasattr(value, "to_pydatetime") else value
-    if not isinstance(timestamp, datetime):
-        raise TypeError("Unsupported timestamp value from yfinance.")
-    if timestamp.tzinfo is None:
-        return timestamp.replace(tzinfo=EASTERN_TZ).astimezone(UTC)
-    return timestamp.astimezone(UTC)
+def _parse_timestamp(value: str) -> datetime:
+    normalized = value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
-def _rows_from_frame(symbol: str, frame) -> list[dict[str, object]]:
+def _request_json(path: str, params: dict[str, str]) -> list[dict[str, object]]:
+    query = urlencode({**params, "token": _tiingo_api_key()})
+    request = Request(
+        f"{TIINGO_BASE_URL}{path}?{query}",
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urlopen(request, timeout=20) as response:
+            payload = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Tiingo request failed with HTTP {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Unable to reach Tiingo: {exc.reason}") from exc
+
+    decoded = json.loads(payload)
+    if not isinstance(decoded, list):
+        raise RuntimeError("Unexpected Tiingo response payload.")
+    return decoded
+
+
+def _daily_rows(symbol: str, payload: list[dict[str, object]]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for index, row in frame.iterrows():
+    for item in payload:
         rows.append(
             {
                 "symbol": symbol,
-                "timestamp": _normalize_timestamp(index),
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
-                "volume": int(row["Volume"]),
+                "timestamp": _parse_timestamp(str(item["date"])),
+                "open": float(item["open"]),
+                "high": float(item["high"]),
+                "low": float(item["low"]),
+                "close": float(item["close"]),
+                "volume": int(item["volume"]),
+            }
+        )
+    return rows
+
+
+def _intraday_rows(symbol: str, payload: list[dict[str, object]]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for item in payload:
+        rows.append(
+            {
+                "symbol": symbol,
+                "timestamp": _parse_timestamp(str(item["date"])),
+                "open": float(item["open"]),
+                "high": float(item["high"]),
+                "low": float(item["low"]),
+                "close": float(item["close"]),
+                "volume": int(item["volume"]),
             }
         )
     return rows
 
 
 def _fetch_symbol_seed(symbol: str) -> list[dict[str, object]]:
-    history = yf.Ticker(symbol).history(period="60d", interval="1d", auto_adjust=False)
-    if history.empty:
-        return []
-    return _rows_from_frame(symbol, history)
+    end_date = date.today()
+    start_date = end_date - timedelta(days=90)
+    payload = _request_json(
+        f"/tiingo/daily/{symbol}/prices",
+        {
+            "startDate": start_date.isoformat(),
+            "endDate": end_date.isoformat(),
+            "resampleFreq": "daily",
+        },
+    )
+    return _daily_rows(symbol, payload)
 
 
 def _fetch_symbol_intraday(symbol: str) -> list[dict[str, object]]:
-    ticks = yf.download(
-        tickers=symbol,
-        period="1d",
-        interval="1m",
-        progress=False,
-        auto_adjust=False,
-        threads=False,
+    now = datetime.now(EASTERN_TZ)
+    start_date = now.date().isoformat()
+    end_date = now.date().isoformat()
+    payload = _request_json(
+        f"/iex/{symbol}/prices",
+        {
+            "startDate": start_date,
+            "endDate": end_date,
+            "resampleFreq": "1min",
+            "columns": "date,open,high,low,close,volume",
+        },
     )
-    if ticks.empty:
-        return []
-    return _rows_from_frame(symbol, ticks)
+    return _intraday_rows(symbol, payload)
 
 
 async def seed_historical_prices() -> int:
@@ -95,3 +155,19 @@ async def refresh_latest_prices(force: bool = False) -> int:
         rows.extend(await to_thread(_fetch_symbol_intraday, symbol))
 
     return await upsert_price_rows(rows)
+
+
+async def safe_seed_historical_prices() -> int:
+    try:
+        return await seed_historical_prices()
+    except Exception as exc:  # pragma: no cover - network/provider guard
+        logger.warning("Historical Tiingo seed failed: %s", exc)
+        return 0
+
+
+async def safe_refresh_latest_prices(force: bool = False) -> int:
+    try:
+        return await refresh_latest_prices(force=force)
+    except Exception as exc:  # pragma: no cover - network/provider guard
+        logger.warning("Tiingo refresh failed: %s", exc)
+        return 0

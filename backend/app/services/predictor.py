@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,7 @@ WINDOW_SIZE = 60
 MODEL_DIR = Path(__file__).resolve().parents[2] / "ml"
 MODEL_PATH = MODEL_DIR / "model.pt"
 SCALER_PATH = MODEL_DIR / "scaler.json"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -103,7 +105,12 @@ async def predict_next_close(symbol: str) -> PredictionResponse:
         latest_timestamp = datetime.now(UTC)
     predicted_for_date = _next_trading_day(latest_timestamp.astimezone(UTC).date())
 
-    recent_errors = await fetch_recent_prediction_errors(symbol, limit=30)
+    try:
+        recent_errors = await fetch_recent_prediction_errors(symbol, limit=30)
+    except Exception as exc:  # pragma: no cover - schema/data guard
+        logger.warning("Could not load recent prediction errors for %s: %s", symbol, exc)
+        recent_errors = []
+
     if recent_errors:
         interval_radius = 1.5 * float(np.mean(recent_errors))
     else:
@@ -112,13 +119,16 @@ async def predict_next_close(symbol: str) -> PredictionResponse:
     confidence_low = predicted_close - interval_radius
     confidence_high = predicted_close + interval_radius
 
-    await insert_prediction(
-        symbol=symbol,
-        predicted_close=predicted_close,
-        confidence_low=confidence_low,
-        confidence_high=confidence_high,
-        predicted_for_date=predicted_for_date,
-    )
+    try:
+        await insert_prediction(
+            symbol=symbol,
+            predicted_close=predicted_close,
+            confidence_low=confidence_low,
+            confidence_high=confidence_high,
+            predicted_for_date=predicted_for_date,
+        )
+    except Exception as exc:  # pragma: no cover - schema/data guard
+        logger.warning("Could not persist prediction for %s: %s", symbol, exc)
 
     return PredictionResponse(
         symbol=symbol,

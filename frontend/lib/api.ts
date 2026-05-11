@@ -1,10 +1,9 @@
-import { Prediction, StockPricePoint } from "@/types";
+import { Prediction, StockPricePoint, StockSummary } from "@/types";
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_PROXY_PATH ?? "/api";
+const apiProxyBaseUrl = process.env.NEXT_PUBLIC_API_PROXY_PATH ?? "/api";
 
-export async function fetchStocks(symbol?: string): Promise<StockPricePoint[]> {
-  const search = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
-  const response = await fetch(`${apiBaseUrl}/stocks${search}`, {
+export async function fetchStocks(): Promise<StockSummary[]> {
+  const response = await fetch(`${apiProxyBaseUrl}/stocks`, {
     cache: "no-store"
   });
 
@@ -15,9 +14,25 @@ export async function fetchStocks(symbol?: string): Promise<StockPricePoint[]> {
   return response.json();
 }
 
+export async function fetchHistory(
+  symbol: string,
+  days = 60
+): Promise<StockPricePoint[]> {
+  const response = await fetch(
+    `${apiProxyBaseUrl}/history/${encodeURIComponent(symbol)}?days=${days}`,
+    { cache: "no-store" }
+  );
+
+  if (!response.ok) {
+    throw new Error("Failed to fetch history.");
+  }
+
+  return response.json();
+}
+
 export async function fetchPrediction(symbol: string): Promise<Prediction> {
   const response = await fetch(
-    `${process.env.NEXT_PUBLIC_BACKEND_API_URL}/predict/${encodeURIComponent(symbol)}`,
+    `${apiProxyBaseUrl}/predict/${encodeURIComponent(symbol)}`,
     { cache: "no-store" }
   );
 
@@ -27,4 +42,3 @@ export async function fetchPrediction(symbol: string): Promise<Prediction> {
 
   return response.json();
 }
-
