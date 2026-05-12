@@ -180,12 +180,53 @@ async def fetch_recent_prediction_errors(symbol: str, limit: int = 30) -> list[f
     return [float(row["absolute_error"]) for row in rows]
 
 
+async def fetch_prediction_history(symbol: str, limit: int = 30) -> list[dict[str, Any]]:
+    if _pool is None:
+        return []
+
+    query = """
+        with ranked_predictions as (
+            select
+                symbol,
+                predicted_close,
+                confidence_low,
+                confidence_high,
+                predicted_for_date,
+                forecast_day,
+                created_at,
+                row_number() over (
+                    partition by symbol, predicted_for_date, forecast_day
+                    order by created_at desc
+                ) as rn
+            from public.predictions
+            where symbol = upper($1)
+              and forecast_day = 1
+              and predicted_for_date <= current_date
+        )
+        select
+            symbol,
+            predicted_close,
+            confidence_low,
+            confidence_high,
+            predicted_for_date,
+            forecast_day
+        from ranked_predictions
+        where rn = 1
+        order by predicted_for_date desc
+        limit $2
+    """
+    async with _pool.acquire() as connection:
+        rows = await connection.fetch(query, symbol, limit)
+    return [dict(row) for row in reversed(rows)]
+
+
 async def insert_prediction(
     symbol: str,
     predicted_close: float,
     confidence_low: float,
     confidence_high: float,
     predicted_for_date,
+    forecast_day: int = 1,
 ) -> None:
     if _pool is None:
         return
@@ -196,9 +237,10 @@ async def insert_prediction(
             predicted_close,
             confidence_low,
             confidence_high,
-            predicted_for_date
+            predicted_for_date,
+            forecast_day
         )
-        values ($1, $2, $3, $4, $5)
+        values ($1, $2, $3, $4, $5, $6)
     """
     async with _pool.acquire() as connection:
         await connection.execute(
@@ -208,6 +250,7 @@ async def insert_prediction(
             confidence_low,
             confidence_high,
             predicted_for_date,
+            forecast_day,
         )
 
 

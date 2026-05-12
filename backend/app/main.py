@@ -8,10 +8,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.routers.news import router as news_router
 from app.routers.predict import router as predict_router
 from app.routers.stocks import router as stocks_router
 from app.services.data_fetcher import safe_refresh_latest_prices, safe_seed_historical_prices
 from app.services.db import close_pool, init_pool
+from app.services.news_service import close_client as close_news_client
 from app.services.predictor import load_predictor_artifacts
 
 
@@ -31,6 +33,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         scheduler.shutdown(wait=False)
+        await close_news_client()
         await close_pool()
 
 
@@ -54,6 +57,7 @@ app.add_middleware(
 
 app.include_router(stocks_router, prefix="/stocks", tags=["stocks"])
 app.include_router(predict_router, prefix="/predict", tags=["predict"])
+app.include_router(news_router)
 
 
 @app.get("/health")

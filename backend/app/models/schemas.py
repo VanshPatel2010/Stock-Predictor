@@ -32,3 +32,28 @@ class PredictionResponse(BaseModel):
     predicted_for_date: date = Field(alias="predictedForDate")
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class ForecastPointResponse(BaseModel):
+    date: date
+    predicted_close: float
+    confidence_low: float
+    confidence_high: float
+
+
+class ForecastResponse(BaseModel):
+    symbol: str
+    forecast: list[ForecastPointResponse]
+
+
+class HistoricalPredictionPointResponse(BaseModel):
+    date: date
+    predicted_close: float
+    confidence_low: float
+    confidence_high: float
+    forecast_day: int
+
+
+class HistoricalPredictionResponse(BaseModel):
+    symbol: str
+    predictions: list[HistoricalPredictionPointResponse]
